@@ -32,6 +32,46 @@ class LangGraphConverter:
         for key in required_keys:
             if key not in self.definition:
                 raise ValueError(f"Missing required key: {key}")
+                
+        # Check for common node/edge naming issues
+        self._validate_node_edge_names()
+    
+    def _validate_node_edge_names(self):
+        """Validate node and edge names for common errors with START/END constants."""
+        edges = self.definition.get("edges", [])
+        nodes = self.definition.get("nodes", [])
+        
+        # Get all node IDs
+        node_ids = [node.get("id") for node in nodes if "id" in node]
+        
+        # Check for problematic node IDs
+        problematic_node_ids = []
+        for node_id in node_ids:
+            if node_id in ["start_node", "end_node"]:
+                problematic_node_ids.append(node_id)
+        
+        if problematic_node_ids:
+            print(f"Warning: Found potentially problematic node IDs: {', '.join(problematic_node_ids)}")
+            print("Use 'start' and 'end' for start/end nodes instead of 'start_node' and 'end_node'")
+        
+        # Check edges for references to 'start_node' and 'end_node'
+        problematic_edges = []
+        for i, edge in enumerate(edges):
+            source = edge.get("source", "")
+            target = edge.get("target", "")
+            
+            if source == "start_node":
+                problematic_edges.append(f"edge[{i}].source = 'start_node'")
+            if target == "end_node":
+                problematic_edges.append(f"edge[{i}].target = 'end_node'")
+                
+        if problematic_edges:
+            print(f"Warning: Found references to 'start_node' or 'end_node' in edges:")
+            for issue in problematic_edges:
+                print(f"  - {issue}")
+            print("LangGraph uses START and END constants instead")
+            
+        # While we can fix these issues, it's good to warn about them
     
     def validate_python_syntax(self, code: str, context: str = "code") -> tuple[bool, Optional[str]]:
         """
@@ -405,7 +445,8 @@ def {node_id.replace('-', '_')}(state):
             
             # Regular edge (no condition)
             if condition is None:
-                if source == "start":
+                # Map common start node naming errors to START constant
+                if source == "start" or source == "start_node":
                     source = "START"
                 elif source.startswith('"') or source.startswith("'"):
                     # Already a string, leave as is
@@ -413,7 +454,8 @@ def {node_id.replace('-', '_')}(state):
                 else:
                     source = f"\"{source}\""
                     
-                if target == "end":
+                # Map common end node naming errors to END constant
+                if target == "end" or target == "end_node":
                     target = "END"
                 elif target.startswith('"') or target.startswith("'"):
                     # Already a string, leave as is
@@ -429,8 +471,8 @@ def {node_id.replace('-', '_')}(state):
             if not any("condition" in edge for edge in source_edges):
                 continue
                 
-            # Skip start node
-            if source == "start":
+            # Skip start node variants
+            if source == "start" or source == "start_node" or source == "START":
                 continue
             
             # Add conditional edges mapping
@@ -448,8 +490,8 @@ def {node_id.replace('-', '_')}(state):
                 target = edge["target"]
                 
                 if condition is not None:
-                    # For end node, use END constant
-                    if target == "end":
+                    # Map common end node naming errors to END constant
+                    if target == "end" or target == "end_node":
                         target = "END"
                     else:
                         target = f"\"{target}\""

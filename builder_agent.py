@@ -289,17 +289,39 @@ def validate_json(state: BuilderState) -> Dict[str, Any]:
     elif "nodes" in agent_json and isinstance(agent_json["nodes"], list):
         # Check that all edges reference valid nodes
         node_ids = [node["id"] for node in agent_json["nodes"]]
+        
+        # Add START and END to valid node IDs to check against
+        valid_node_ids = node_ids + ["START", "END"]
+        
+        # Check for incorrect start/end node references
+        common_node_name_errors = {
+            "start_node": "START",
+            "start": "START",
+            "end_node": "END",
+            "end": "END"
+        }
+        
         for edge in agent_json["edges"]:
             if "source" not in edge or "target" not in edge:
                 validation_errors.append(f"Edge missing source or target: {edge}")
                 is_valid = False
                 continue
             
-            if edge["source"] != "start" and edge["source"] not in node_ids:
+            # Check for common incorrect node names
+            for incorrect, correct in common_node_name_errors.items():
+                if edge["source"] == incorrect:
+                    validation_errors.append(f"Edge uses '{incorrect}' instead of '{correct}' constant: {edge}")
+                    is_valid = False
+                
+                if edge["target"] == incorrect:
+                    validation_errors.append(f"Edge uses '{incorrect}' instead of '{correct}' constant: {edge}")
+                    is_valid = False
+            
+            if edge["source"] not in valid_node_ids:
                 validation_errors.append(f"Edge references non-existent source node: {edge['source']}")
                 is_valid = False
             
-            if edge["target"] != "end" and edge["target"] not in node_ids:
+            if edge["target"] not in valid_node_ids:
                 validation_errors.append(f"Edge references non-existent target node: {edge['target']}")
                 is_valid = False
     
@@ -643,6 +665,7 @@ def fix_return_types(agent_json: Dict[str, Any]) -> Dict[str, Any]:
     
     1. Ensures return types are valid Python types
     2. Fixes Python syntax in condition nodes and function nodes
+    3. Fixes common node ID and edge naming issues
     """
     if not agent_json or not isinstance(agent_json, dict):
         return agent_json
@@ -650,9 +673,16 @@ def fix_return_types(agent_json: Dict[str, Any]) -> Dict[str, Any]:
     # Create a deep copy to avoid modifying the input directly
     fixed_json = json.loads(json.dumps(agent_json))
     
-    # Fix Node Return Types
+    # Fix Node IDs
     if "nodes" in fixed_json:
         for i, node in enumerate(fixed_json["nodes"]):
+            # Fix common node ID naming issues
+            if "id" in node:
+                if node["id"] == "start_node":
+                    node["id"] = "start"
+                elif node["id"] == "end_node":
+                    node["id"] = "end"
+                
             # Skip nodes without data
             if "data" not in node:
                 continue
@@ -704,6 +734,19 @@ def fix_return_types(agent_json: Dict[str, Any]) -> Dict[str, Any]:
                 # If no return statement, add a basic one to avoid syntax errors
                 if "return" not in code:
                     node["data"]["code"] = code + "\nreturn {\"result\": \"placeholder\"}"
+    
+    # Fix Edges
+    if "edges" in fixed_json:
+        for edge in fixed_json["edges"]:
+            # Fix source references
+            if "source" in edge:
+                if edge["source"] == "start_node":
+                    edge["source"] = "start"
+                
+            # Fix target references
+            if "target" in edge:
+                if edge["target"] == "end_node":
+                    edge["target"] = "end"
     
     # Fix State Definition
     if "stateDefinition" in fixed_json and "schema" in fixed_json["stateDefinition"]:
