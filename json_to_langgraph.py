@@ -445,25 +445,23 @@ def {node_id.replace('-', '_')}(state):
             
             # Regular edge (no condition)
             if condition is None:
-                # Map common start node naming errors to START constant
-                if source == "start" or source == "start_node":
-                    source = "START"
-                elif source.startswith('"') or source.startswith("'"):
-                    # Already a string, leave as is
-                    pass
+                # Handle START/END constant usage
+                if source in ["start", "start_node", "START"]:
+                    # Use the actual START constant, not a string
+                    source_code = "START"
                 else:
-                    source = f"\"{source}\""
+                    # Use string representation for other nodes
+                    source_code = f"\"{source}\""
                     
-                # Map common end node naming errors to END constant
-                if target == "end" or target == "end_node":
-                    target = "END"
-                elif target.startswith('"') or target.startswith("'"):
-                    # Already a string, leave as is
-                    pass
+                if target in ["end", "end_node", "END"]:
+                    # Use the actual END constant, not a string
+                    target_code = "END"
                 else:
-                    target = f"\"{target}\""
+                    # Use string representation for other nodes
+                    target_code = f"\"{target}\""
                     
-                construction_lines.append(f"    graph.add_edge({source}, {target})")
+                # Add the edge with proper constant/string usage
+                construction_lines.append(f"    graph.add_edge({source_code}, {target_code})")
         
         # Process conditional edges grouped by source
         for source, source_edges in edge_groups.items():
@@ -490,13 +488,14 @@ def {node_id.replace('-', '_')}(state):
                 target = edge["target"]
                 
                 if condition is not None:
-                    # Map common end node naming errors to END constant
-                    if target == "end" or target == "end_node":
-                        target = "END"
+                    # Handle END constant for conditional edges
+                    if target in ["end", "end_node", "END"]:
+                        # Use the actual END constant
+                        target_code = "END"
+                        construction_lines.append(f"            \"{condition}\": {target_code},")
                     else:
-                        target = f"\"{target}\""
-                    
-                    construction_lines.append(f"            \"{condition}\": {target},")
+                        # Use string for regular node targets
+                        construction_lines.append(f"            \"{condition}\": \"{target}\",")
             
             construction_lines.append(f"        }}")
             construction_lines.append(f"    )")

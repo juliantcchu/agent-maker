@@ -9,6 +9,8 @@ import json
 import os
 import re
 import ast
+import tempfile
+import importlib.util
 from typing import Dict, Any, List, TypedDict, Literal, Optional, Annotated
 import argparse
 from langchain_openai import ChatOpenAI
@@ -22,6 +24,9 @@ from langgraph.graph.message import MessagesState
 # Import the converter
 from json_to_langgraph import convert_json_to_langgraph
 
+# Import visualization utilities
+from utils import visualize_agent, save_agent_visualization
+
 # Define the state schema
 class BuilderState(TypedDict):
     """State for the builder agent."""
@@ -31,6 +36,7 @@ class BuilderState(TypedDict):
     is_valid: Optional[bool]
     json_path: Optional[str]
     py_path: Optional[str]
+    viz_path: Optional[str]  # Path to visualization file
     output_dir: str
     error: Optional[str]
     model_name: str
@@ -237,10 +243,13 @@ def validate_json(state: BuilderState) -> Dict[str, Any]:
     print("Validating agent JSON...")
     
     agent_json = state['agent_json']
+    output_dir = state.get('output_dir', '.')
     
     # Set default
     is_valid = True
     validation_errors = []
+    temp_py_path = None
+    temp_viz_path = None
     
     # Part 1: Validate JSON structure
     
@@ -310,11 +319,11 @@ def validate_json(state: BuilderState) -> Dict[str, Any]:
             # Check for common incorrect node names
             for incorrect, correct in common_node_name_errors.items():
                 if edge["source"] == incorrect:
-                    validation_errors.append(f"Edge uses '{incorrect}' instead of '{correct}' constant: {edge}")
+                    validation_errors.append(f"Edge uses '{incorrect}' instead of '{correct}' constant: {edge}. Please replace with uppercase constant.")
                     is_valid = False
                 
                 if edge["target"] == incorrect:
-                    validation_errors.append(f"Edge uses '{incorrect}' instead of '{correct}' constant: {edge}")
+                    validation_errors.append(f"Edge uses '{incorrect}' instead of '{correct}' constant: {edge}. Please replace with uppercase constant.")
                     is_valid = False
             
             if edge["source"] not in valid_node_ids:
@@ -378,9 +387,24 @@ def validate_json(state: BuilderState) -> Dict[str, Any]:
     
     # Part 3: Validate whether it can compile to LangGraph code
     if is_valid:
+        # Apply direct fix for edge constants - fail-safe mechanism
+        edge_fixes_applied = False
+        if "edges" in agent_json:
+            for edge in agent_json["edges"]:
+                if "source" in edge:
+                    if edge["source"] in ["start", "start_node"]:
+                        edge["source"] = "START"
+                        edge_fixes_applied = True
+                if "target" in edge:
+                    if edge["target"] in ["end", "end_node"]:
+                        edge["target"] = "END"
+                        edge_fixes_applied = True
+        
+        if edge_fixes_applied:
+            print("Applied automatic fixes to edge constants (START/END)")
+            
         # Save JSON to a temporary file for validation
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix='.json') as temp_json:
+        with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as temp_json:
             with open(temp_json.name, 'w') as f:
                 json.dump(agent_json, f)
             
@@ -390,15 +414,76 @@ def validate_json(state: BuilderState) -> Dict[str, Any]:
             if not code_is_valid:
                 validation_errors.append(f"Python code generation validation failed: {error_msg}")
                 is_valid = False
+            else:
+                # If validation passes, try to compile and visualize the agent
+                try:
+                    # Generate temporary Python file
+                    agent_name = agent_json["metadata"]["name"].lower().replace(" ", "_")
+                    temp_py_path = os.path.join(tempfile.gettempdir(), f"{agent_name}.py")
+                    convert_json_to_langgraph(temp_json.name, temp_py_path)
+                    
+                    # Load the module and create the agent
+                    spec = importlib.util.spec_from_file_location(agent_name, temp_py_path)
+                    if spec and spec.loader:
+                        module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(module)
+                        
+                        # Try to create the agent
+                        if hasattr(module, 'create_agent_graph'):
+                            agent = module.create_agent_graph()
+                            
+                            # Create visualization of the agent
+                            temp_viz_path = os.path.join(tempfile.gettempdir(), f"{agent_name}_viz.html")
+                            try:
+                                save_agent_visualization(
+                                    agent, 
+                                    temp_viz_path, 
+                                    format="html"
+                                )
+                                print(f"Generated visualization for validation: {temp_viz_path}")
+                            except Exception as e:
+                                validation_errors.append(f"Failed to generate visualization: {str(e)}")
+                                # This is not a critical error, so we don't set is_valid to False
+                        else:
+                            validation_errors.append("Generated module doesn't have a create_agent_graph function")
+                            is_valid = False
+                    else:
+                        validation_errors.append("Failed to load generated module")
+                        is_valid = False
+                except Exception as e:
+                    validation_errors.append(f"Error during agent compilation: {str(e)}")
+                    is_valid = False
+            
+            # Clean up
+            try:
+                os.unlink(temp_json.name)
+            except:
+                pass
     
     print(f"Validation {'passed' if is_valid else 'failed'}")
     if not is_valid:
         print("\n".join(validation_errors))
+        # Clean up temporary files if validation failed
+        if temp_py_path and os.path.exists(temp_py_path):
+            try:
+                os.unlink(temp_py_path)
+            except:
+                pass
+        if temp_viz_path and os.path.exists(temp_viz_path):
+            try:
+                os.unlink(temp_viz_path)
+            except:
+                pass
     
     result = {
         "is_valid": is_valid,
         "error": "\n".join(validation_errors) if validation_errors else None
     }
+    
+    # If validation passed, add temporary file paths to result
+    if is_valid:
+        result["py_path"] = temp_py_path
+        result["viz_path"] = temp_viz_path
     
     debug_print({**state, **result}, "validate_json - END")
     return result
@@ -456,6 +541,9 @@ Focus especially on these common issues:
 4. Duplicate node IDs
 5. Edges referencing non-existent nodes
 6. Make sure all required fields are present in each node
+7. VERY IMPORTANT: For edge connections, use uppercase 'START' and 'END' constants:
+   - Use 'START' (not 'start' or 'start_node') for connections from the start node
+   - Use 'END' (not 'end' or 'end_node') for connections to the end node
 
 Return the COMPLETE fixed JSON with all required elements."""
     else:
@@ -467,6 +555,9 @@ This could involve:
 1. Fixing the JSON structure (missing keys, invalid relationships)
 2. Fixing Python code within condition and function nodes
 3. Ensuring proper connectivity between nodes
+4. EXTREMELY IMPORTANT: Use uppercase 'START' and 'END' constants for edges:
+   - Change any 'start' or 'start_node' sources to 'START'
+   - Change any 'end' or 'end_node' targets to 'END'
 
 Return the COMPLETE fixed JSON, not just the fixed parts."""
     
@@ -589,10 +680,14 @@ def save_json(state: BuilderState) -> Dict[str, Any]:
     debug_print(state, "save_json - START")
     agent_json = state['agent_json']
     output_dir = state['output_dir']
+    temp_py_path = state.get('py_path')
+    temp_viz_path = state.get('viz_path')
     
     # Create a filename from the agent name
     agent_name = agent_json["metadata"]["name"].lower().replace(" ", "_")
     json_path = os.path.join(output_dir, f"{agent_name}.json")
+    py_path = os.path.join(output_dir, f"{agent_name}.py")
+    viz_path = os.path.join(output_dir, f"{agent_name}_viz.html")
     
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
@@ -603,7 +698,36 @@ def save_json(state: BuilderState) -> Dict[str, Any]:
     
     print(f"Agent JSON saved to: {json_path}")
     
+    # Copy the Python file if it was already created during validation
     result = {"json_path": json_path}
+    
+    if temp_py_path and os.path.exists(temp_py_path):
+        # Copy the Python file to the output directory
+        with open(temp_py_path, 'r') as src_file, open(py_path, 'w') as dest_file:
+            dest_file.write(src_file.read())
+        print(f"Agent Python code saved to: {py_path}")
+        result["py_path"] = py_path
+        
+        # Clean up temporary Python file
+        try:
+            os.unlink(temp_py_path)
+        except:
+            pass
+    
+    # Copy the visualization file if it was created during validation
+    if temp_viz_path and os.path.exists(temp_viz_path):
+        # Copy the visualization file to the output directory
+        with open(temp_viz_path, 'r') as src_file, open(viz_path, 'w') as dest_file:
+            dest_file.write(src_file.read())
+        print(f"Agent visualization saved to: {viz_path}")
+        result["viz_path"] = viz_path
+        
+        # Clean up temporary visualization file
+        try:
+            os.unlink(temp_viz_path)
+        except:
+            pass
+    
     debug_print({**state, **result}, "save_json - END")
     return result
 
@@ -617,28 +741,133 @@ def compile_code(state: BuilderState) -> Dict[str, Any]:
     agent_json = state['agent_json']
     json_path = state['json_path']
     output_dir = state['output_dir']
+    py_path = state.get('py_path')
     
-    # Generate Python code from the JSON
+    # If Python file was already created during validation and saved, just use that
+    if py_path and os.path.exists(py_path):
+        print(f"Using previously generated Python code at: {py_path}")
+        result = {"py_path": py_path}
+        
+        # If visualization was also already created, include it in the result
+        viz_path = state.get('viz_path')
+        if viz_path and os.path.exists(viz_path):
+            print(f"Using previously generated visualization at: {viz_path}")
+            result["viz_path"] = viz_path
+            
+        debug_print({**state, **result}, "compile_code - END (reusing)")
+        return result
+    
+    # Otherwise, generate Python code from the JSON
     agent_name = agent_json["metadata"]["name"].lower().replace(" ", "_")
     py_path = os.path.join(output_dir, f"{agent_name}.py")
+    viz_path = os.path.join(output_dir, f"{agent_name}_viz.html")
     
     try:
         # First validate that the JSON can be converted to valid Python code
         is_valid, error_msg = convert_json_to_langgraph(json_path, validate_only=True)
         
         if not is_valid:
-            print(f"Python validation failed: {error_msg}")
-            result = {
-                "is_valid": False,
-                "error": f"Python validation error: {error_msg}"
-            }
-            debug_print({**state, **result}, "compile_code - END (failed)")
-            return result
+            # Special handling for START/END node errors - make one more attempt
+            if "Found edge starting at unknown node 'START'" in error_msg or "Found edge ending at unknown node 'END'" in error_msg:
+                print("Detected START/END node reference error. Attempting to fix...")
+                # Make a deep copy and apply fixes
+                agent_json_fixed = json.loads(json.dumps(agent_json))
+                
+                # Fix edges directly
+                if "edges" in agent_json_fixed:
+                    for edge in agent_json_fixed["edges"]:
+                        # Fix START node references
+                        if edge.get("source") in ["START", "start", "start_node"]:
+                            # Make sure there's a matching start node
+                            has_start_node = False
+                            for node in agent_json_fixed.get("nodes", []):
+                                if node.get("id") in ["start", "START"] and node.get("type") == "start":
+                                    has_start_node = True
+                                    break
+                            
+                            if not has_start_node:
+                                # Add a start node if needed
+                                agent_json_fixed["nodes"].append({
+                                    "id": "start",
+                                    "type": "start",
+                                    "data": {}
+                                })
+                                print("Added missing start node to repair edge reference")
+                        
+                        # Fix END node references
+                        if edge.get("target") in ["END", "end", "end_node"]:
+                            # Make sure there's a matching end node
+                            has_end_node = False
+                            for node in agent_json_fixed.get("nodes", []):
+                                if node.get("id") in ["end", "END"] and node.get("type") == "end":
+                                    has_end_node = True
+                                    break
+                            
+                            if not has_end_node:
+                                # Add an end node if needed
+                                agent_json_fixed["nodes"].append({
+                                    "id": "end",
+                                    "type": "end",
+                                    "data": {}
+                                })
+                                print("Added missing end node to repair edge reference")
+                
+                # Save fixed JSON
+                temp_json_path = json_path + ".fixed"
+                with open(temp_json_path, 'w') as f:
+                    json.dump(agent_json_fixed, f, indent=2)
+                
+                # Try compilation again with fixed JSON
+                is_valid, error_msg = convert_json_to_langgraph(temp_json_path, validate_only=True)
+                if is_valid:
+                    # Use the fixed version for the actual compilation
+                    print("Fixed START/END node issue successfully")
+                    json_path = temp_json_path
+                else:
+                    print(f"Fixed JSON still has validation issues: {error_msg}")
+            
+            if not is_valid:
+                print(f"Python validation failed: {error_msg}")
+                result = {
+                    "is_valid": False,
+                    "error": f"Python validation error: {error_msg}"
+                }
+                debug_print({**state, **result}, "compile_code - END (failed)")
+                return result
         
         # If validation passes, generate the Python file
         convert_json_to_langgraph(json_path, py_path)
         print(f"Agent Python code saved to: {py_path}")
-        result = {"py_path": py_path}
+        
+        # Try to load the module and visualize the agent
+        try:
+            spec = importlib.util.spec_from_file_location(agent_name, py_path)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                
+                if hasattr(module, 'create_agent_graph'):
+                    agent = module.create_agent_graph()
+                    
+                    # Create visualization of the agent
+                    save_agent_visualization(
+                        agent, 
+                        viz_path, 
+                        format="html"
+                    )
+                    print(f"Agent visualization saved to: {viz_path}")
+                    
+                    result = {"py_path": py_path, "viz_path": viz_path}
+                else:
+                    print(f"Warning: Generated module doesn't have a create_agent_graph function")
+                    result = {"py_path": py_path}
+            else:
+                print(f"Warning: Could not load generated module for visualization")
+                result = {"py_path": py_path}
+        except Exception as e:
+            print(f"Warning: Failed to visualize agent: {str(e)}")
+            result = {"py_path": py_path}
+        
         debug_print({**state, **result}, "compile_code - END (success)")
         return result
     except ValueError as e:
@@ -675,13 +904,24 @@ def fix_return_types(agent_json: Dict[str, Any]) -> Dict[str, Any]:
     
     # Fix Node IDs
     if "nodes" in fixed_json:
+        # First make a map of all node IDs for validation
+        node_ids = set()
+        
         for i, node in enumerate(fixed_json["nodes"]):
+            # Record all node IDs
+            if "id" in node:
+                node_ids.add(node["id"])
+                
             # Fix common node ID naming issues
             if "id" in node:
                 if node["id"] == "start_node":
                     node["id"] = "start"
+                    node_ids.remove("start_node")
+                    node_ids.add("start")
                 elif node["id"] == "end_node":
                     node["id"] = "end"
+                    node_ids.remove("end_node")
+                    node_ids.add("end")
                 
             # Skip nodes without data
             if "data" not in node:
@@ -701,52 +941,66 @@ def fix_return_types(agent_json: Dict[str, Any]) -> Dict[str, Any]:
                         tool_def["returnType"] = "bool"
                     elif return_type == "any":
                         tool_def["returnType"] = "Any"
-                    
-            # Fix LLM node return types
-            if node["type"] == "llm" and "returnType" in node["data"]:
-                return_type = node["data"]["returnType"]
-                # Convert JSON/TS-like types to Python types
-                if return_type == "string":
-                    node["data"]["returnType"] = "str"
-                elif return_type == "number":
-                    node["data"]["returnType"] = "float"
-                elif return_type == "boolean":
-                    node["data"]["returnType"] = "bool"
-                elif return_type == "any":
-                    node["data"]["returnType"] = "Any"
             
-            # Ensure condition logic returns a string for routing
-            if node["type"] == "condition" and "conditionLogic" in node["data"]:
-                condition_logic = node["data"]["conditionLogic"]
-                
-                # Check if condition logic doesn't have a return statement
-                if "return" not in condition_logic:
-                    # Add a return statement if missing
-                    node["data"]["conditionLogic"] = f"return {condition_logic}"
-                
-                # Ensure the condition logic returns a string by wrapping non-string returns
-                if not condition_logic.strip().startswith("return "):
-                    node["data"]["conditionLogic"] = f"return str({condition_logic.strip()})"
-            
-            # Ensure function nodes have proper return handling
+            # Fix Python code in function nodes
             if node["type"] == "function" and "code" in node["data"]:
+                # Ensure code has return statement
                 code = node["data"]["code"]
-                # If no return statement, add a basic one to avoid syntax errors
                 if "return" not in code:
-                    node["data"]["code"] = code + "\nreturn {\"result\": \"placeholder\"}"
+                    fixed_code = code.strip()
+                    if not fixed_code.endswith(":"):  # Not ending with a colon (not a control structure)
+                        # Add return statement if it doesn't end with one
+                        fixed_code += "\nreturn {'result': 'Function execution completed'}"
+                        node["data"]["code"] = fixed_code
+            
+            # Fix condition node logic
+            if node["type"] == "condition" and "conditionLogic" in node["data"]:
+                # Make sure condition returns a string value
+                logic = node["data"]["conditionLogic"]
+                
+                # If logic doesn't have a return statement, add one
+                if "return" not in logic:
+                    fixed_logic = logic.strip()
+                    if not fixed_logic.endswith(":"):  # Not ending with a colon
+                        # Add a default return statement
+                        fixed_logic += "\nreturn 'default'"
+                        node["data"]["conditionLogic"] = fixed_logic
+                elif not any(["return " in line and not line.strip().startswith("#") for line in logic.split("\n")]):
+                    # If there's no non-commented return statement, add one
+                    fixed_logic = logic.strip()
+                    fixed_logic += "\nreturn 'default'"
+                    node["data"]["conditionLogic"] = fixed_logic
     
     # Fix Edges
     if "edges" in fixed_json:
         for edge in fixed_json["edges"]:
             # Fix source references
             if "source" in edge:
-                if edge["source"] == "start_node":
-                    edge["source"] = "start"
+                if edge["source"] in ["start_node", "start"]:
+                    edge["source"] = "START"
                 
             # Fix target references
             if "target" in edge:
-                if edge["target"] == "end_node":
-                    edge["target"] = "end"
+                if edge["target"] in ["end_node", "end"]:
+                    edge["target"] = "END"
+    
+    # Check for missing start/end nodes
+    has_start_edge = False
+    has_end_edge = False
+    
+    if "edges" in fixed_json:
+        for edge in fixed_json["edges"]:
+            if edge.get("source") == "START":
+                has_start_edge = True
+            if edge.get("target") == "END":
+                has_end_edge = True
+    
+    # Add a warning if there are START/END references but no corresponding nodes
+    if has_start_edge and not any(node.get("type") == "start" for node in fixed_json.get("nodes", [])):
+        print("Warning: Found START edge references but no 'start' node. This may cause compilation issues.")
+    
+    if has_end_edge and not any(node.get("type") == "end" for node in fixed_json.get("nodes", [])):
+        print("Warning: Found END edge references but no 'end' node. This may cause compilation issues.")
     
     # Fix State Definition
     if "stateDefinition" in fixed_json and "schema" in fixed_json["stateDefinition"]:
@@ -900,6 +1154,9 @@ def main():
             print(f"- Python file: {result['py_path']}")
         if result.get("json_path"):
             print(f"- JSON file: {result['json_path']}")
+        if result.get("viz_path"):
+            print(f"- Visualization: {result['viz_path']}")
+            print(f"  (Open this HTML file in a browser to view the agent visualization)")
     else:
         print("\nFailed to create agent.")
         if result.get("error"):
