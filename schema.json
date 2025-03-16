@@ -1,0 +1,175 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Agent Flow Schema",
+  "description": "Schema for defining agents that can be visualized as react-flow diagrams and compiled to langgraph",
+  "type": "object",
+  "required": ["nodes", "edges", "metadata"],
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "required": ["name", "description"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name of the agent flow"
+        },
+        "description": {
+          "type": "string",
+          "description": "Description of what the agent flow does"
+        },
+        "version": {
+          "type": "string",
+          "description": "Version of the flow definition",
+          "default": "1.0.0"
+        },
+        "author": {
+          "type": "string",
+          "description": "Author of the flow"
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "description": "Array of nodes in the graph",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "position", "data"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique identifier for the node"
+          },
+          "type": {
+            "type": "string",
+            "description": "Type of node",
+            "enum": ["start", "end", "llm", "tool", "function", "condition", "custom"]
+          },
+          "position": {
+            "type": "object",
+            "description": "Position of the node in the react-flow diagram",
+            "required": ["x", "y"],
+            "properties": {
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            }
+          },
+          "data": {
+            "type": "object",
+            "description": "Data specific to the node type",
+            "required": ["label"],
+            "properties": {
+              "label": {
+                "type": "string",
+                "description": "Label for the node"
+              },
+              "description": {
+                "type": "string",
+                "description": "Description of what the node does"
+              },
+              "code": {
+                "type": "string",
+                "description": "Python code to execute for function nodes"
+              },
+              "prompt": {
+                "type": "string",
+                "description": "Prompt for LLM nodes"
+              },
+              "model": {
+                "type": "string",
+                "description": "Model to use for LLM nodes"
+              },
+              "toolDefinition": {
+                "type": "object",
+                "description": "Definition for a tool node",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "parameters": {
+                    "type": "object"
+                  },
+                  "returnType": {
+                    "type": "string"
+                  }
+                }
+              },
+              "conditionLogic": {
+                "type": "string",
+                "description": "Logic for condition nodes"
+              },
+              "customType": {
+                "type": "string",
+                "description": "Type identifier for custom nodes"
+              },
+              "customData": {
+                "type": "object",
+                "description": "Additional data for custom nodes"
+              }
+            }
+          }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "description": "Array of edges connecting nodes",
+      "items": {
+        "type": "object",
+        "required": ["id", "source", "target"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique identifier for the edge"
+          },
+          "source": {
+            "type": "string",
+            "description": "ID of the source node"
+          },
+          "target": {
+            "type": "string",
+            "description": "ID of the target node"
+          },
+          "label": {
+            "type": "string",
+            "description": "Label for the edge"
+          },
+          "condition": {
+            "type": "string",
+            "description": "Condition for conditional edges"
+          },
+          "sourceHandle": {
+            "type": "string",
+            "description": "Handle identifier on the source node"
+          },
+          "targetHandle": {
+            "type": "string",
+            "description": "Handle identifier on the target node"
+          }
+        }
+      }
+    },
+    "stateDefinition": {
+      "type": "object",
+      "description": "Definition of the state object that will be passed between nodes",
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Type of state to use",
+          "enum": ["messages", "custom"],
+          "default": "messages"
+        },
+        "schema": {
+          "type": "object",
+          "description": "JSON schema of custom state objects"
+        }
+      }
+    }
+  }
+} 

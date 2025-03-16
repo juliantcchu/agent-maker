@@ -1,0 +1,139 @@
+{
+  "metadata": {
+    "name": "Simple Web Research Agent",
+    "description": "An agent that searches the web and summarizes information",
+    "version": "1.0.0",
+    "author": "Agent Maker"
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "start",
+      "position": { "x": 250, "y": 0 },
+      "data": {
+        "label": "Start"
+      }
+    },
+    {
+      "id": "llm-router",
+      "type": "llm",
+      "position": { "x": 250, "y": 100 },
+      "data": {
+        "label": "LLM Router",
+        "description": "Routes user's query to appropriate tool or directly to answer",
+        "model": "gpt-4",
+        "prompt": "You are a routing agent. Based on the user query, decide whether to search the web or directly answer. Return 'search' if web search is needed, otherwise return 'answer'."
+      }
+    },
+    {
+      "id": "router-condition",
+      "type": "condition",
+      "position": { "x": 250, "y": 200 },
+      "data": {
+        "label": "Router Decision",
+        "description": "Routes based on LLM decision",
+        "conditionLogic": "return state['llm-router'].strip().lower()"
+      }
+    },
+    {
+      "id": "web-search-tool",
+      "type": "tool",
+      "position": { "x": 100, "y": 300 },
+      "data": {
+        "label": "Web Search",
+        "description": "Searches the web for information",
+        "toolDefinition": {
+          "name": "web_search",
+          "description": "Search the web for information",
+          "parameters": {
+            "query": {
+              "type": "string",
+              "description": "The search query"
+            }
+          },
+          "returnType": "string"
+        }
+      }
+    },
+    {
+      "id": "summarize",
+      "type": "llm",
+      "position": { "x": 100, "y": 400 },
+      "data": {
+        "label": "Summarize Results",
+        "description": "Summarizes web search results",
+        "model": "gpt-4",
+        "prompt": "Summarize the following web search results to answer the user's query: {{web_search_results}}"
+      }
+    },
+    {
+      "id": "direct-answer",
+      "type": "llm",
+      "position": { "x": 400, "y": 300 },
+      "data": {
+        "label": "Direct Answer",
+        "description": "Answers the query directly when no web search is needed",
+        "model": "gpt-4",
+        "prompt": "Answer the user's query based on your knowledge: {{query}}"
+      }
+    },
+    {
+      "id": "end",
+      "type": "end",
+      "position": { "x": 250, "y": 500 },
+      "data": {
+        "label": "End"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "start-to-router",
+      "source": "start",
+      "target": "llm-router"
+    },
+    {
+      "id": "router-to-condition",
+      "source": "llm-router",
+      "target": "router-condition"
+    },
+    {
+      "id": "condition-to-search",
+      "source": "router-condition",
+      "target": "web-search-tool",
+      "label": "search",
+      "condition": "state['llm-router'].strip().lower() == 'search'"
+    },
+    {
+      "id": "condition-to-answer",
+      "source": "router-condition",
+      "target": "direct-answer",
+      "label": "answer",
+      "condition": "state['llm-router'].strip().lower() == 'answer'"
+    },
+    {
+      "id": "search-to-summarize",
+      "source": "web-search-tool",
+      "target": "summarize"
+    },
+    {
+      "id": "summarize-to-end",
+      "source": "summarize",
+      "target": "end"
+    },
+    {
+      "id": "direct-answer-to-end",
+      "source": "direct-answer",
+      "target": "end"
+    }
+  ],
+  "stateDefinition": {
+    "type": "custom",
+    "schema": {
+      "query": "string",
+      "web_search_results": "string",
+      "llm-router": "string",
+      "response": "string"
+    }
+  }
+} 
